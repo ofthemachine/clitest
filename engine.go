@@ -2,6 +2,7 @@ package clitest
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,7 +11,6 @@ import (
 	"time"
 )
 
-// FindProjectRoot walks upward from startPath until marker exists in a directory.
 func FindProjectRoot(startPath string, marker string) (string, error) {
 	current, err := filepath.Abs(startPath)
 	if err != nil {
@@ -28,7 +28,6 @@ func FindProjectRoot(startPath string, marker string) (string, error) {
 	}
 }
 
-// MergePatterns returns BuiltinPatterns overlaid with user (user wins).
 func MergePatterns(user map[string]string) map[string]string {
 	out := make(map[string]string)
 	for k, v := range BuiltinPatterns {
@@ -146,9 +145,9 @@ func RunActScript(tempDir, actScriptPath string, additionalEnv map[string]string
 	} else {
 		env = append(env, "PATH="+tempDir)
 	}
-	const maxRetries = 3
+	const maxAttempts = 3
 	var last error
-	for attempt := 0; attempt <= maxRetries; attempt++ {
+	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
 			time.Sleep(100 * time.Millisecond)
 		}
@@ -162,7 +161,7 @@ func RunActScript(tempDir, actScriptPath string, additionalEnv map[string]string
 		stdout, stderr = outBuf.String(), errBuf.String()
 		if execErr != nil {
 			last = execErr
-			if isTransientError(execErr) && attempt < maxRetries {
+			if isTransientError(execErr) && attempt < maxAttempts-1 {
 				continue
 			}
 			if exitError, ok := execErr.(*exec.ExitError); ok {
@@ -203,19 +202,7 @@ func isTransientError(err error) bool {
 	if err == nil {
 		return false
 	}
-	s := strings.ToLower(err.Error())
-	if strings.Contains(s, "text file busy") {
-		return true
-	}
-	if strings.Contains(s, "not initialized") {
-		return true
-	}
-	for _, p := range []string{"resource temporarily unavailable", "no such process", "interrupted system call", "connection reset"} {
-		if strings.Contains(s, p) {
-			return true
-		}
-	}
-	return false
+	return strings.Contains(strings.ToLower(err.Error()), "text file busy")
 }
 
 // ResolveTestRoots expands test_dirs entries (globs and trailing `/**`) relative to projectRoot.
@@ -249,9 +236,8 @@ func ResolveTestRoots(projectRoot string, entries []string) ([]string, error) {
 			return nil, err
 		}
 		if len(matches) == 0 {
-			lit := filepath.Join(projectRoot, filepath.Clean(e))
-			if st, err := os.Stat(lit); err == nil && st.IsDir() {
-				add(lit)
+			if st, err := os.Stat(pat); err == nil && st.IsDir() {
+				add(pat)
 			}
 			continue
 		}
@@ -264,7 +250,39 @@ func ResolveTestRoots(projectRoot string, entries []string) ([]string, error) {
 	return out, nil
 }
 
-// BuildInDir runs a shell command string (sh -c) in dir. Pass empty command to skip.
+// RunCase prepares a temp directory, runs act.sh, and asserts results for a single test case.
+// The caller is responsible for creating and cleaning up tempDir.
+func RunCase(tc CLITestCase, tempDir string, projectRoot string, binaryName string, copyGlobs []string, env map[string]string, patterns map[string]string) error {
+	if err := CopyTestDirectoryContents(tc.Path, tempDir); err != nil {
+		return fmt.Errorf("copy fixtures: %w", err)
+	}
+	allGlobs := append([]string{binaryName}, copyGlobs...)
+	for _, pattern := range allGlobs {
+		if strings.TrimSpace(pattern) == "" {
+			continue
+		}
+		matches, err := filepath.Glob(filepath.Join(projectRoot, pattern))
+		if err != nil {
+			return fmt.Errorf("glob %q: %w", pattern, err)
+		}
+		for _, match := range matches {
+			dst := filepath.Join(tempDir, filepath.Base(match))
+			if err := CopyFile(match, dst); err != nil {
+				return fmt.Errorf("copy %s: %w", match, err)
+			}
+			_ = os.Chmod(dst, 0755)
+		}
+	}
+	stdout, stderr, _, actErr := RunActScript(tempDir, tc.ActScript, env)
+	if actErr != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(actErr, &exitErr) {
+			return fmt.Errorf("act.sh: %w", actErr)
+		}
+	}
+	return AssertResultsText(tc.AssertFile, stdout+stderr, patterns)
+}
+
 func BuildInDir(dir string, command string) error {
 	command = strings.TrimSpace(command)
 	if command == "" {

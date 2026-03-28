@@ -96,36 +96,8 @@ func RunSuite(t *testing.T, opts Options) Result {
 			}()
 
 			tempDir := t.TempDir()
-
-			if err := CopyTestDirectoryContents(tc.Path, tempDir); err != nil {
-				t.Fatalf("copy test directory contents: %v", err)
-			}
-
-			allGlobs := append([]string{opts.BinaryName}, opts.CopyGlobs...)
-			for _, pattern := range allGlobs {
-				absPattern := filepath.Join(projectRoot, pattern)
-				matches, err := filepath.Glob(absPattern)
-				if err != nil {
-					t.Fatalf("invalid copy glob %q: %v", pattern, err)
-				}
-				for _, match := range matches {
-					dst := filepath.Join(tempDir, filepath.Base(match))
-					if err := CopyFile(match, dst); err != nil {
-						t.Fatalf("copy %s: %v", match, err)
-					}
-					_ = os.Chmod(dst, 0755)
-				}
-			}
-
-			stdout, stderr, _, actErr := RunActScript(tempDir, tc.ActScript, opts.Environment)
-			if actErr != nil {
-				if _, ok := actErr.(*exec.ExitError); !ok {
-					t.Fatalf("act.sh execution failed: %v", actErr)
-				}
-			}
-
-			if err := AssertResultsText(tc.AssertFile, stdout+stderr, patterns); err != nil {
-				t.Errorf("assert failed: %v", err)
+			if err := RunCase(tc, tempDir, projectRoot, opts.BinaryName, opts.CopyGlobs, opts.Environment, patterns); err != nil {
+				t.Errorf("%v", err)
 			}
 		})
 	}

@@ -1,11 +1,9 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -132,55 +130,14 @@ func main() {
 			}
 			defer os.RemoveAll(tempDir)
 
-			if err := clitest.CopyTestDirectoryContents(tc.Path, tempDir); err != nil {
-				fmt.Fprintf(os.Stderr, "clitest: %s: copy fixtures: %v\n", tc.Name, err)
-				atomic.AddInt32(&failCount, 1)
-				return
-			}
-
-			allGlobs := append([]string{cfg.BinaryName}, cfg.CopyGlobs...)
-			for _, pattern := range allGlobs {
-				if strings.TrimSpace(pattern) == "" {
-					continue
-				}
-				absPattern := filepath.Join(projectRoot, pattern)
-				matches, err := filepath.Glob(absPattern)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "clitest: %s: glob %q: %v\n", tc.Name, pattern, err)
-					atomic.AddInt32(&failCount, 1)
-					return
-				}
-				for _, match := range matches {
-					dst := filepath.Join(tempDir, filepath.Base(match))
-					if err := clitest.CopyFile(match, dst); err != nil {
-						fmt.Fprintf(os.Stderr, "clitest: %s: copy %s: %v\n", tc.Name, match, err)
-						atomic.AddInt32(&failCount, 1)
-						return
-					}
-					_ = os.Chmod(dst, 0755)
-				}
-			}
-
-			stdout, stderr, _, actErr := clitest.RunActScript(tempDir, tc.ActScript, cfg.Environment)
-			combined := stdout + stderr
-			if actErr != nil {
-				var exitErr *exec.ExitError
-				if !errors.As(actErr, &exitErr) {
-					fmt.Fprintf(os.Stderr, "clitest: %s: act.sh: %v\n", tc.Name, actErr)
-					atomic.AddInt32(&failCount, 1)
-					return
-				}
-			}
-
-			if err := clitest.AssertResultsText(tc.AssertFile, combined, patterns); err != nil {
+			if err := clitest.RunCase(tc, tempDir, projectRoot, cfg.BinaryName, cfg.CopyGlobs, cfg.Environment, patterns); err != nil {
 				fmt.Fprintf(os.Stderr, "clitest: FAIL %s (%.2fs)\n%s\n", tc.Name, time.Since(start).Seconds(), err)
-				fmt.Fprintf(os.Stderr, "--- output ---\n%s\n", combined)
 				atomic.AddInt32(&failCount, 1)
 				return
 			}
 
 			if *verbose {
-				fmt.Fprintf(os.Stdout, "--- %s output ---\n%s\n", tc.Name, combined)
+				fmt.Fprintf(os.Stdout, "--- %s ---\n", tc.Name)
 			}
 			fmt.Printf("PASS %s (%.2fs)\n", tc.Name, time.Since(start).Seconds())
 			atomic.AddInt32(&passCount, 1)
@@ -192,11 +149,4 @@ func main() {
 	if failCount > 0 {
 		os.Exit(1)
 	}
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

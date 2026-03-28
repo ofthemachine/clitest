@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 )
 
-// CopyFile copies a file by path.
 func CopyFile(src, dst string) error {
 	data, err := os.ReadFile(src)
 	if err != nil {
@@ -15,7 +14,6 @@ func CopyFile(src, dst string) error {
 	return os.WriteFile(dst, data, 0644)
 }
 
-// CopyDir recursively copies a directory tree.
 func CopyDir(src, dst string) error {
 	src = filepath.Clean(src)
 	dst = filepath.Clean(dst)

@@ -6,6 +6,8 @@ import (
 	"strings"
 )
 
+var placeholderRe = regexp.MustCompile(`\{\{([^}:]+)(?::([^}]+))?\}\}`)
+
 // MatchOutput compares actual output to expected using matchType (e.g. ORDERED_LINES).
 func MatchOutput(expectedContent, actualOutput string, matchType string, patterns map[string]string) error {
 	switch matchType {
@@ -63,13 +65,12 @@ func MatchOutput(expectedContent, actualOutput string, matchType string, pattern
 }
 
 func matchLine(expected, actual string, patterns map[string]string) bool {
-	pl := regexp.MustCompile(`\{\{([^}:]+)(?::([^}]+))?\}\}`)
-	if !pl.MatchString(expected) {
+	if !placeholderRe.MatchString(expected) {
 		return actual == expected
 	}
 	var b strings.Builder
 	last := 0
-	for _, loc := range pl.FindAllStringSubmatchIndex(expected, -1) {
+	for _, loc := range placeholderRe.FindAllStringSubmatchIndex(expected, -1) {
 		b.WriteString(flexLiteralRegex(expected[last:loc[0]]))
 		name := expected[loc[2]:loc[3]]
 		var fragment string

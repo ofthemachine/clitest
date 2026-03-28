@@ -86,7 +86,7 @@ func TestCLI(t *testing.T) {
 - Non-empty, non-`#` lines are expectations (comments use `#`).
 - Matching mode is **ordered lines** with a lookahead window on the combined stdout+stderr.
 - Placeholders: `{{hash8}}`, `{{path}}`, `{{any}}`, `{{timestamp_ms}}`, … see `BuiltinPatterns` in code.
-- Custom regex segment: `{{any:yourRegexHere}}` (only this form; no `re:` / `# REGEX:` / `/.../` line syntax).
+- Custom regex inline: `{{name:yourRegexHere}}` overrides the named pattern with a one-off regex fragment.
 
 `act.sh` runs with `TEST_TEMP_DIR` set and the built binary (and `copy_globs` matches) on `PATH` ahead of the rest of the environment.
 
