@@ -1,0 +1,22 @@
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS := -s -w -X main.version=$(VERSION)
+
+.PHONY: build test test-integration lint fmt
+
+build:
+	CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o clitest ./cmd/clitest/
+
+test:
+	go test ./...
+
+test-integration:
+	go test -tags=integration -v ./tests/...
+
+lint: fmt
+	go vet ./...
+
+fmt:
+	gofmt -w .
+
+install:
+	CGO_ENABLED=0 go install -trimpath -ldflags="$(LDFLAGS)" ./cmd/clitest/

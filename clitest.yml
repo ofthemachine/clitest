@@ -1,0 +1,10 @@
+# Example: run from repo root after `go build` or rely on build_command below.
+binary_name: clitest
+build_command: go build -o clitest ./cmd/clitest/
+project_root_marker: go.mod
+recursive: false
+test_dirs:
+  - tests/dogfood/version
+  - tests/dogfood/help
+  - tests/dogfood/config_run
+  - tests/dogfood/glob_run

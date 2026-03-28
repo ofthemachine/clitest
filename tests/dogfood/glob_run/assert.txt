@@ -1,0 +1,1 @@
+SUMMARY pass=2 fail=0

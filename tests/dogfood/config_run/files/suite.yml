@@ -1,0 +1,6 @@
+root: .
+build_command: ""
+binary_name: ""
+project_root_marker: go.mod
+test_dirs:
+  - case
