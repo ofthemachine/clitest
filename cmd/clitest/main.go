@@ -22,6 +22,8 @@ func main() {
 	parallel := flag.Int("parallel", runtime.NumCPU(), "max concurrent cases")
 	verbose := flag.Bool("v", false, "print act output on success")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	session := flag.Bool("session", false, "start an interactive shell in a prepared test temp directory (requires -dir)")
+	shell := flag.String("shell", "", "shell for -session (default: $SHELL, then zsh, then sh)")
 	flag.Parse()
 
 	if *showVersion {
@@ -61,6 +63,27 @@ func main() {
 			fmt.Fprintf(os.Stderr, "clitest: find project root: %v\n", err)
 			os.Exit(2)
 		}
+	}
+
+	if *session {
+		if *dirOverride == "" {
+			fmt.Fprintf(os.Stderr, "clitest: -session requires -dir\n")
+			os.Exit(2)
+		}
+		testDir, err := filepath.Abs(*dirOverride)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "clitest: -dir: %v\n", err)
+			os.Exit(2)
+		}
+		binaryName := cfg.BinaryName
+		if binaryName == "" {
+			binaryName = "app"
+		}
+		if err := clitest.StartTestSession(projectRoot, testDir, binaryName, cfg.BuildCommand, cfg.CopyGlobs, cfg.Environment, *shell); err != nil {
+			fmt.Fprintf(os.Stderr, "clitest: %v\n", err)
+			os.Exit(2)
+		}
+		return
 	}
 
 	var bases []string
@@ -110,6 +133,8 @@ func main() {
 	p := max(1, *parallel)
 
 	var passCount, failCount int32
+	var failedPaths []string
+	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, p)
 
@@ -133,6 +158,9 @@ func main() {
 			if err := clitest.RunCase(tc, tempDir, projectRoot, cfg.BinaryName, cfg.CopyGlobs, cfg.Environment, patterns); err != nil {
 				fmt.Fprintf(os.Stderr, "clitest: FAIL %s (%.2fs)\n%s\n", tc.Name, time.Since(start).Seconds(), err)
 				atomic.AddInt32(&failCount, 1)
+				mu.Lock()
+				failedPaths = append(failedPaths, tc.Path)
+				mu.Unlock()
 				return
 			}
 
@@ -145,8 +173,12 @@ func main() {
 	}
 	wg.Wait()
 
-	fmt.Printf("SUMMARY pass=%d fail=%d\n", passCount, failCount)
+	fmt.Printf("\nSUMMARY pass=%d fail=%d\n", passCount, failCount)
 	if failCount > 0 {
+		fmt.Printf("FAILED TESTS:\n")
+		for _, p := range failedPaths {
+			fmt.Printf("  %s  \n", p)
+		}
 		os.Exit(1)
 	}
 }

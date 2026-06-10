@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -67,6 +68,7 @@ func RunSuite(t *testing.T, opts Options) Result {
 
 	var total, passed, failed int32
 	var failedDetails []string
+	var mu sync.Mutex
 
 	progressEnabled := clitestProgressEnabled()
 
@@ -82,7 +84,9 @@ func RunSuite(t *testing.T, opts Options) Result {
 			defer func() {
 				if t.Failed() {
 					atomic.AddInt32(&failed, 1)
-					failedDetails = append(failedDetails, fmt.Sprintf("%s: %s", tc.Name, tc.AssertFile))
+					mu.Lock()
+					failedDetails = append(failedDetails, tc.Path)
+					mu.Unlock()
 				} else {
 					atomic.AddInt32(&passed, 1)
 				}
@@ -100,6 +104,14 @@ func RunSuite(t *testing.T, opts Options) Result {
 				t.Errorf("%v", err)
 			}
 		})
+	}
+
+	if failed > 0 {
+		fmt.Printf("\n--- FAILED TESTS ---\n")
+		for _, path := range failedDetails {
+			fmt.Printf("  %s  \n", path)
+		}
+		fmt.Printf("--------------------\n")
 	}
 
 	return Result{Total: total, Passed: passed, Failed: failed, FailedDetails: failedDetails}

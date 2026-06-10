@@ -47,6 +47,28 @@ func CopyDir(src, dst string) error {
 	return nil
 }
 
+// CopyAllDirectoryContents copies every entry from testDir into tempDir.
+func CopyAllDirectoryContents(testDir, tempDir string) error {
+	entries, err := os.ReadDir(testDir)
+	if err != nil {
+		return fmt.Errorf("read test directory: %w", err)
+	}
+	for _, entry := range entries {
+		src := filepath.Join(testDir, entry.Name())
+		dst := filepath.Join(tempDir, entry.Name())
+		if entry.IsDir() {
+			if err := CopyDir(src, dst); err != nil {
+				return fmt.Errorf("copy directory %s: %w", entry.Name(), err)
+			}
+		} else {
+			if err := CopyFile(src, dst); err != nil {
+				return fmt.Errorf("copy file %s: %w", entry.Name(), err)
+			}
+		}
+	}
+	return nil
+}
+
 // CopyTestDirectoryContents copies test fixture files into tempDir, excluding act.sh and assert.txt.
 func CopyTestDirectoryContents(testDir, tempDir string) error {
 	entries, err := os.ReadDir(testDir)

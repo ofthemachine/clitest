@@ -2,4 +2,4 @@ root: .
 build_command: ""
 binary_name: ""
 test_dirs:
-  - "glob_fixture/*"
+  - parent_case

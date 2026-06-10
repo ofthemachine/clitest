@@ -22,6 +22,7 @@ type Options struct {
 	// CopyGlobs are glob patterns relative to project root; matched files are copied into each test temp dir.
 	CopyGlobs []string
 	// NonRecursive, when true, only considers act.sh/assert.txt directly in each BaseDir (no subdirectory walk).
+	// When false (default), walks subdirectories but does not descend past directories that are test cases.
 	NonRecursive bool
 }
 

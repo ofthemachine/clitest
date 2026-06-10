@@ -19,18 +19,13 @@ func TestClitestDogfood(t *testing.T) {
 	dog := filepath.Join(testDir, "dogfood")
 	repoRoot := filepath.Clean(filepath.Join(testDir, ".."))
 	opts := clitest.Options{
-		RootDir: repoRoot,
-		BaseDirs: []string{
-			filepath.Join(dog, "version"),
-			filepath.Join(dog, "help"),
-			filepath.Join(dog, "config_run"),
-			filepath.Join(dog, "glob_run"),
-		},
-		NonRecursive:      true,
+		RootDir:           repoRoot,
+		BaseDirs:          []string{dog},
 		EnvOverrideVar:    "CLITEST_SELFTEST_DIR",
 		BinaryName:        "clitest",
 		BuildCommand:      []string{"go", "build", "-o", "clitest", "./cmd/clitest"},
 		ProjectRootMarker: "go.mod",
+		Environment:       map[string]string{"CLITEST_VERIFY_ENVVARS": "i am set"},
 	}
 
 	clitest.RunSuite(t, opts)
