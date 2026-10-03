@@ -51,6 +51,13 @@ func RunSuite(t *testing.T, opts Options) Result {
 	patterns := MergePatterns(opts.DefaultPatterns)
 
 	buildOnce(t, opts)
+	stageDir, err := StageBinary(projectRoot, opts.BinaryName)
+	if err != nil {
+		t.Logf("%v; copying the binary into each case instead", err)
+		stageDir = ""
+	} else {
+		t.Cleanup(func() { _ = CleanStageDir(stageDir) })
+	}
 
 	if override := os.Getenv(opts.EnvOverrideVar); override != "" {
 		opts.BaseDirs = []string{override}
@@ -100,7 +107,7 @@ func RunSuite(t *testing.T, opts Options) Result {
 			}()
 
 			tempDir := t.TempDir()
-			if err := RunCase(tc, tempDir, projectRoot, opts.BinaryName, opts.CopyGlobs, opts.Environment, patterns); err != nil {
+			if err := RunCase(tc, tempDir, projectRoot, stageDir, opts.BinaryName, opts.CopyGlobs, opts.Environment, patterns); err != nil {
 				t.Errorf("%v", err)
 			}
 		})

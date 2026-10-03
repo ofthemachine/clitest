@@ -130,6 +130,11 @@ func main() {
 	}
 
 	patterns := clitest.MergePatterns(cfg.Patterns)
+	stageDir, err := clitest.StageBinary(projectRoot, cfg.BinaryName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "clitest: %v; copying the binary into each case instead\n", err)
+		stageDir = ""
+	}
 	p := max(1, *parallel)
 
 	var passCount, failCount int32
@@ -155,7 +160,7 @@ func main() {
 			}
 			defer os.RemoveAll(tempDir)
 
-			if err := clitest.RunCase(tc, tempDir, projectRoot, cfg.BinaryName, cfg.CopyGlobs, cfg.Environment, patterns); err != nil {
+			if err := clitest.RunCase(tc, tempDir, projectRoot, stageDir, cfg.BinaryName, cfg.CopyGlobs, cfg.Environment, patterns); err != nil {
 				fmt.Fprintf(os.Stderr, "clitest: FAIL %s (%.2fs)\n%s\n", tc.Name, time.Since(start).Seconds(), err)
 				atomic.AddInt32(&failCount, 1)
 				mu.Lock()
@@ -172,6 +177,7 @@ func main() {
 		}()
 	}
 	wg.Wait()
+	_ = clitest.CleanStageDir(stageDir) // before any os.Exit below, which skips defers
 
 	fmt.Printf("\nSUMMARY pass=%d fail=%d\n", passCount, failCount)
 	if failCount > 0 {

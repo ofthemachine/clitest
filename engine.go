@@ -2,6 +2,7 @@ package clitest
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -142,8 +143,81 @@ func ActScriptEnv(tempDir string, additionalEnv map[string]string) []string {
 	return env
 }
 
-func copyProjectArtifacts(tempDir, projectRoot, binaryName string, copyGlobs []string) error {
+// StageSentinel is placed in every staging directory created by StageBinary
+// to verify ownership before recursive cleanup.
+const StageSentinel = ".clitest-stage"
+
+// StageBinary copies projectRoot/binaryName once into a new temp directory
+// named for its content (clitest-bin-<sha8>-*), for cases to hard-link
+// rather than copy. A freshly written executable is slow to start the first
+// time (macOS scans it: about a second for a large binary), so copying it
+// into every case directory costs that second per case; links share one
+// file, scanned once. Linking a private copy rather than the project's own
+// binary means a rebuild mid-run can't disturb running cases, and a case
+// can't change the project's binary (cases do share the stage, so a case
+// must not rewrite its binary in place). The stage sits in the OS temp
+// directory beside the case directories, so links stay on one filesystem.
+// CleanStageDir removes the directory once finished.
+func StageBinary(projectRoot, binaryName string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(projectRoot, binaryName))
+	if err != nil {
+		return "", fmt.Errorf("stage %s: %w", binaryName, err)
+	}
+	sum := sha256.Sum256(data)
+	dir, err := os.MkdirTemp("", fmt.Sprintf("clitest-bin-%x-*", sum[:4]))
+	if err != nil {
+		return "", fmt.Errorf("stage %s: %w", binaryName, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, StageSentinel), nil, 0o600); err != nil {
+		_ = os.RemoveAll(dir)
+		return "", fmt.Errorf("stage %s: %w", binaryName, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, filepath.Base(binaryName)), data, 0o755); err != nil {
+		_ = CleanStageDir(dir)
+		return "", fmt.Errorf("stage %s: %w", binaryName, err)
+	}
+	return dir, nil
+}
+
+// CleanStageDir safely removes a staging directory created by StageBinary.
+// It verifies the directory contains StageSentinel before removing anything.
+// An empty dir string is a no-op and returns nil.
+func CleanStageDir(dir string) error {
+	if dir == "" {
+		return nil
+	}
+	sentinel := filepath.Join(dir, StageSentinel)
+	if _, err := os.Stat(sentinel); err != nil {
+		return fmt.Errorf("refusing to clean stage dir %q: missing sentinel %s", dir, StageSentinel)
+	}
+	return os.RemoveAll(dir)
+}
+
+// linkOrCopy hard-links src at dst, or copies it (mode 0755) where a link
+// isn't possible (another filesystem, or one without links).
+func linkOrCopy(src, dst string) error {
+	if os.Link(src, dst) == nil {
+		return nil
+	}
+	if err := CopyFile(src, dst); err != nil {
+		return err
+	}
+	return os.Chmod(dst, 0o755)
+}
+
+// copyProjectArtifacts puts the binary and copyGlobs into tempDir: the
+// binary linked from stageDir (see StageBinary), or copied from projectRoot
+// when stageDir is "". copyGlobs are always copied, so a case can change
+// its own without touching the project.
+func copyProjectArtifacts(tempDir, projectRoot, stageDir, binaryName string, copyGlobs []string) error {
 	allGlobs := append([]string{binaryName}, copyGlobs...)
+	if stageDir != "" {
+		name := filepath.Base(binaryName)
+		if err := linkOrCopy(filepath.Join(stageDir, name), filepath.Join(tempDir, name)); err != nil {
+			return fmt.Errorf("link %s: %w", name, err)
+		}
+		allGlobs = copyGlobs
+	}
 	for _, pattern := range allGlobs {
 		if strings.TrimSpace(pattern) == "" {
 			continue
@@ -163,12 +237,13 @@ func copyProjectArtifacts(tempDir, projectRoot, binaryName string, copyGlobs []s
 	return nil
 }
 
-// PrepareCaseDir copies fixtures and project artifacts into tempDir for a test run.
-func PrepareCaseDir(testDir, tempDir, projectRoot, binaryName string, copyGlobs []string) error {
+// PrepareCaseDir copies fixtures and project artifacts into tempDir for a
+// test run, linking the binary from stageDir when it is set (StageBinary).
+func PrepareCaseDir(testDir, tempDir, projectRoot, stageDir, binaryName string, copyGlobs []string) error {
 	if err := CopyTestDirectoryContents(testDir, tempDir); err != nil {
 		return fmt.Errorf("copy fixtures: %w", err)
 	}
-	return copyProjectArtifacts(tempDir, projectRoot, binaryName, copyGlobs)
+	return copyProjectArtifacts(tempDir, projectRoot, stageDir, binaryName, copyGlobs)
 }
 
 // PrepareSessionDir copies all test files (including act.sh and assert.txt) and project artifacts.
@@ -179,7 +254,7 @@ func PrepareSessionDir(testDir, tempDir, projectRoot, binaryName string, copyGlo
 	if act := filepath.Join(tempDir, "act.sh"); exists(act) {
 		_ = os.Chmod(act, 0755)
 	}
-	return copyProjectArtifacts(tempDir, projectRoot, binaryName, copyGlobs)
+	return copyProjectArtifacts(tempDir, projectRoot, "", binaryName, copyGlobs)
 }
 
 // RunActScript copies act.sh into tempDir, runs it, and returns stdout/stderr.
@@ -300,9 +375,10 @@ func ResolveTestRoots(projectRoot string, entries []string) ([]string, error) {
 }
 
 // RunCase prepares a temp directory, runs act.sh, and asserts results for a single test case.
-// The caller is responsible for creating and cleaning up tempDir.
-func RunCase(tc CLITestCase, tempDir string, projectRoot string, binaryName string, copyGlobs []string, env map[string]string, patterns map[string]string) error {
-	if err := PrepareCaseDir(tc.Path, tempDir, projectRoot, binaryName, copyGlobs); err != nil {
+// The caller is responsible for creating and cleaning up tempDir. stageDir is
+// a StageBinary directory to link the binary from ("" copies it instead).
+func RunCase(tc CLITestCase, tempDir, projectRoot, stageDir, binaryName string, copyGlobs []string, env map[string]string, patterns map[string]string) error {
+	if err := PrepareCaseDir(tc.Path, tempDir, projectRoot, stageDir, binaryName, copyGlobs); err != nil {
 		return err
 	}
 	stdout, stderr, _, actErr := RunActScript(tempDir, tc.ActScript, env)
