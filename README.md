@@ -93,7 +93,9 @@ func TestCLI(t *testing.T) {
 - Placeholders: `{{hash8}}`, `{{path}}`, `{{any}}`, `{{timestamp_ms}}`, … see `BuiltinPatterns` in code.
 - Custom regex inline: `{{name:yourRegexHere}}` overrides the named pattern with a one-off regex fragment.
 
-`act.sh` runs with `TEST_TEMP_DIR` set and the built binary (and `copy_globs` matches) on `PATH` ahead of the rest of the environment. The binary is copied once per run into a staging directory and hard-linked into each case (a copy where a link isn't possible): a freshly written executable is slow on its first run, about a second on macOS, so copying it per case cost that second every case. `copy_globs` matches are still copied, so a case can change its own; cases share the staged binary, so a case must not rewrite it in place.
+`act.sh` runs with `TEST_TEMP_DIR` set and the built binary (and `copy_globs` matches) on `PATH` ahead of the rest of the environment. The binary is copied once per run into a staging directory and symlinked into each case (hard-linked where a symlink isn't possible, a copy where neither is; not hard-linked first, since macOS may check a hard-linked executable by another case's name, gone once that case ends, and kill it): a freshly written executable is slow on its first run, about a second on macOS, so copying it per case cost that second every case. `copy_globs` matches are still copied, so a case can change its own; cases share the staged binary, so a case must not rewrite it in place.
+
+Each case's `act.sh` runs in its own process group, killed when the case ends, so nothing it started (a server, a background tail) outlives it; a case that runs longer than `CLITEST_CASE_TIMEOUT` (a Go duration, default `3m`, `0` for no limit) fails with what it printed so far.
 
 ## Development
 

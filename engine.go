@@ -2,6 +2,7 @@ package clitest
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -148,7 +149,7 @@ func ActScriptEnv(tempDir string, additionalEnv map[string]string) []string {
 const StageSentinel = ".clitest-stage"
 
 // StageBinary copies projectRoot/binaryName once into a new temp directory
-// named for its content (clitest-bin-<sha8>-*), for cases to hard-link
+// named for its content (clitest-bin-<sha8>-*), for cases to link
 // rather than copy. A freshly written executable is slow to start the first
 // time (macOS scans it: about a second for a large binary), so copying it
 // into every case directory costs that second per case; links share one
@@ -193,10 +194,15 @@ func CleanStageDir(dir string) error {
 	return os.RemoveAll(dir)
 }
 
-// linkOrCopy hard-links src at dst, or copies it (mode 0755) where a link
-// isn't possible (another filesystem, or one without links).
+// linkOrCopy links dst to src: a symbolic link, so every case runs the
+// staged file by its one path, else a hard link, else a copy (mode 0755).
+// Not a hard link first: macOS checks an executable by one of its file's
+// names, which may be another case's, and a case that has finished has
+// deleted its name; the check that cannot read the file kills the process
+// ("Terminating process due to Malware rejection"), seen with cases run in
+// parallel.
 func linkOrCopy(src, dst string) error {
-	if os.Link(src, dst) == nil {
+	if os.Symlink(src, dst) == nil || os.Link(src, dst) == nil {
 		return nil
 	}
 	if err := CopyFile(src, dst); err != nil {
@@ -257,8 +263,56 @@ func PrepareSessionDir(testDir, tempDir, projectRoot, binaryName string, copyGlo
 	return copyProjectArtifacts(tempDir, projectRoot, "", binaryName, copyGlobs)
 }
 
+// actCommand runs the script at path through the interpreter its #! line
+// names, which reads it as a file: a freshly written file that is executed
+// itself is scanned first on macOS (hundreds of milliseconds, every case,
+// since each copies its act.sh anew). A script without one is executed.
+func actCommand(ctx context.Context, path string) *exec.Cmd {
+	data, err := os.ReadFile(path)
+	if err == nil && bytes.HasPrefix(data, []byte("#!")) {
+		line, _, _ := strings.Cut(string(data[2:]), "\n")
+		if argv := strings.Fields(line); len(argv) > 0 {
+			return exec.CommandContext(ctx, argv[0], append(argv[1:], "./"+filepath.Base(path))...)
+		}
+	}
+	return exec.CommandContext(ctx, "./"+filepath.Base(path))
+}
+
+// CaseTimeoutVar names how long a case's act.sh may run (a Go duration;
+// 0 for no limit), DefaultCaseTimeout when unset.
+const CaseTimeoutVar = "CLITEST_CASE_TIMEOUT"
+
+// DefaultCaseTimeout is how long a case may run unless CaseTimeoutVar says.
+const DefaultCaseTimeout = 3 * time.Minute
+
+// caseTimeout is how long a case may run: CaseTimeoutVar's duration (0:
+// no limit), else DefaultCaseTimeout.
+func caseTimeout() (time.Duration, error) {
+	v := strings.TrimSpace(os.Getenv(CaseTimeoutVar))
+	if v == "" {
+		return DefaultCaseTimeout, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < 0 {
+		return 0, fmt.Errorf("%s=%q: want a duration like 90s or 5m (0 for none)", CaseTimeoutVar, v)
+	}
+	return d, nil
+}
+
+// caseContext is the context a case runs under: done after limit, or never
+// (but for its cancel) when limit is 0.
+func caseContext(limit time.Duration) (context.Context, context.CancelFunc) {
+	if limit == 0 {
+		return context.WithCancel(context.Background())
+	}
+	return context.WithTimeout(context.Background(), limit)
+}
+
 // RunActScript copies act.sh into tempDir, runs it, and returns stdout/stderr.
 // A non-nil *exec.ExitError indicates a non-zero exit (often intentional).
+// act.sh runs in its own process group, which is killed when it ends or
+// runs past its time (CaseTimeoutVar): whatever it started (a server, a
+// tail, a process the OS never let start) ends with the case.
 func RunActScript(tempDir, actScriptPath string, additionalEnv map[string]string) (stdout, stderr string, exitCode int, err error) {
 	if !exists(actScriptPath) {
 		return "", "", -1, fmt.Errorf("act.sh not found: %s", actScriptPath)
@@ -269,20 +323,32 @@ func RunActScript(tempDir, actScriptPath string, additionalEnv map[string]string
 	}
 	_ = os.Chmod(local, 0755)
 	env := ActScriptEnv(tempDir, additionalEnv)
+	limit, err := caseTimeout()
+	if err != nil {
+		return "", "", -1, err
+	}
 	const maxAttempts = 3
 	var last error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
 			time.Sleep(100 * time.Millisecond)
 		}
-		cmd := exec.Command("./act.sh")
+		ctx, cancel := caseContext(limit)
+		cmd := actCommand(ctx, local)
 		cmd.Dir = tempDir
 		cmd.Env = env
 		var outBuf, errBuf bytes.Buffer
 		cmd.Stdout = &outBuf
 		cmd.Stderr = &errBuf
+		inGroup(cmd)
 		execErr := cmd.Run()
+		endGroup(cmd)
+		timedOut := ctx.Err() == context.DeadlineExceeded
+		cancel()
 		stdout, stderr = outBuf.String(), errBuf.String()
+		if timedOut {
+			return stdout, stderr, -1, fmt.Errorf("act.sh timed out after %s (%s; 0 for none)", limit, CaseTimeoutVar)
+		}
 		if execErr != nil {
 			last = execErr
 			if isTransientError(execErr) && attempt < maxAttempts-1 {

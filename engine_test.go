@@ -3,7 +3,12 @@ package clitest
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // When recursive discovery finds act.sh+assert.txt in a directory, that directory
@@ -164,5 +169,71 @@ func TestCleanStageDir(t *testing.T) {
 	}
 	if _, err := os.Stat(stageDir); !os.IsNotExist(err) {
 		t.Errorf("stageDir still exists after CleanStageDir")
+	}
+}
+
+func TestRunActScriptThroughItsInterpreter(t *testing.T) {
+	for name, script := range map[string]string{
+		"bin path": "#!/bin/sh\necho \"$0 ran\"\n",
+		"env":      "#!/usr/bin/env sh\necho \"$0 ran\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			src := filepath.Join(t.TempDir(), "act.sh")
+			if err := os.WriteFile(src, []byte(script), 0o644); err != nil { // not executable: the interpreter reads it
+				t.Fatal(err)
+			}
+			out, _, code, err := RunActScript(t.TempDir(), src, nil)
+			if err != nil || code != 0 || out != "./act.sh ran\n" {
+				t.Fatalf("got %q, exit %d, %v", out, code, err)
+			}
+		})
+	}
+}
+
+// A case past its time fails saying so, and what it started ends with it.
+func TestRunActScriptTimesOutAndEndsWhatItStarted(t *testing.T) {
+	t.Setenv(CaseTimeoutVar, "1s")
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	src := filepath.Join(t.TempDir(), "act.sh")
+	script := "#!/bin/sh\necho started\nsleep 60 &\necho $! > " + pidFile + "\nwait\n"
+	if err := os.WriteFile(src, []byte(script), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	out, _, _, err := RunActScript(t.TempDir(), src, nil)
+	if err == nil || !strings.Contains(err.Error(), "timed out after 1s") {
+		t.Fatalf("err = %v, want a timeout", err)
+	}
+	if out != "started\n" {
+		t.Errorf("output so far = %q", out)
+	}
+	if d := time.Since(start); d > 10*time.Second {
+		t.Errorf("took %s: the timeout did not end the case", d)
+	}
+	if runtime.GOOS == "windows" {
+		return
+	}
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(data)))
+	if p, err := os.FindProcess(pid); err == nil && p.Signal(syscall.Signal(0)) == nil {
+		t.Errorf("the case's background sleep (pid %d) outlived it", pid)
+	}
+}
+
+func TestCaseTimeoutSetting(t *testing.T) {
+	for v, want := range map[string]time.Duration{"": DefaultCaseTimeout, "90s": 90 * time.Second, "0": 0} {
+		t.Setenv(CaseTimeoutVar, v)
+		if got, err := caseTimeout(); err != nil || got != want {
+			t.Errorf("%s=%q: got %s, %v; want %s", CaseTimeoutVar, v, got, err, want)
+		}
+	}
+	for _, v := range []string{"soon", "-1s"} {
+		t.Setenv(CaseTimeoutVar, v)
+		if _, err := caseTimeout(); err == nil {
+			t.Errorf("%s=%q: accepted", CaseTimeoutVar, v)
+		}
 	}
 }
